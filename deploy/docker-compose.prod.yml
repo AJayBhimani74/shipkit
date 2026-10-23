@@ -1,0 +1,64 @@
+x-app: &app
+  image: ${IMAGE_PREFIX}/shipkit-app:${TAG}
+  env_file: .env.prod
+  restart: unless-stopped
+  environment: &env
+    APP_ENV: production
+    APP_DEBUG: "false"
+    LOG_CHANNEL: stderr
+    DB_CONNECTION: mysql
+    DB_HOST: mysql
+    DB_DATABASE: shipkit
+    DB_USERNAME: shipkit
+    CACHE_STORE: redis
+    QUEUE_CONNECTION: redis
+    SESSION_DRIVER: redis
+    REDIS_HOST: redis
+  depends_on:
+    mysql:
+      condition: service_healthy
+    redis:
+      condition: service_started
+
+services:
+  web:
+    image: ${IMAGE_PREFIX}/shipkit-web:${TAG}
+    restart: unless-stopped
+    ports:
+      - "${PORT:-80}:80"
+    depends_on:
+      - app
+
+  app:
+    <<: *app
+
+  worker:
+    <<: *app
+    command: php artisan queue:work --tries=3 --max-time=3600
+    stop_grace_period: 60s
+
+  scheduler:
+    <<: *app
+    command: php artisan schedule:work
+
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: shipkit
+      MYSQL_USER: shipkit
+    env_file: .env.prod
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -p$$MYSQL_ROOT_PASSWORD"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+volumes:
+  mysql-data:
