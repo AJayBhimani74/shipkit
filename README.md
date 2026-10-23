@@ -1,59 +1,78 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# shipkit
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+A small Laravel 12 app used to show how an application is packaged, tested, released and deployed: Docker images, separate containers for the web server, the PHP process, the queue worker and the scheduler, a CI pipeline, image publishing and a deploy script that rolls back on its own when the new version is unhealthy.
 
-## About Laravel
+The app itself is tiny on purpose. It has one page, `/status`, which reports whether the database and cache work, which version is running, and when the queue worker last ran a job. That one page is enough to prove every container is wired up.
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+```json
+{"version":"v1.0.0","database":"ok","cache":"ok","worker_heartbeat_seconds_ago":12}
+```
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+## What is in the box
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+| Piece | Where |
+|---|---|
+| Multi-stage `Dockerfile` with two targets: `app` (PHP-FPM) and `web` (nginx with the public files) | `Dockerfile`, `docker/` |
+| Local stack: web, app, worker, scheduler, MySQL 8.4, Redis, plus a one-off migrate step | `docker-compose.yml` |
+| CI: Pint, tests, and a check that both images still build | `.github/workflows/ci.yml` |
+| Release: push a `v*` tag, both images are built and pushed to GitHub Container Registry | `.github/workflows/release.yml` |
+| Server deploy: compose file and `deploy.sh` | `deploy/` |
 
-## Learning Laravel
+## Run the stack on your machine
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework. You can also check out [Laravel Learn](https://laravel.com/learn), where you will be guided through building a modern Laravel application.
+```bash
+export APP_KEY=$(php artisan key:generate --show)   # needs composer install first, or use any base64:... key
+docker compose up -d --build
+curl localhost:8080/status
+```
 
-If you don't feel like reading, [Laracasts](https://laracasts.com) can help. Laracasts contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+After about a minute the scheduler has queued a heartbeat job and the worker has run it, and `worker_heartbeat_seconds_ago` stops being `null`.
 
-## Laravel Sponsors
+```bash
+docker compose ps
+docker compose logs -f worker
+docker compose down -v      # stop and delete the data
+```
 
-We would like to extend our thanks to the following sponsors for funding Laravel development. If you are interested in becoming a sponsor, please visit the [Laravel Partners program](https://partners.laravel.com).
+## Releasing
 
-### Premium Partners
+```bash
+git tag v1.0.1
+git push origin v1.0.1
+```
 
-- **[Vehikl](https://vehikl.com)**
-- **[Tighten Co.](https://tighten.co)**
-- **[Kirschbaum Development Group](https://kirschbaumdevelopment.com)**
-- **[64 Robots](https://64robots.com)**
-- **[Curotec](https://www.curotec.com/services/technologies/laravel)**
-- **[DevSquad](https://devsquad.com/hire-laravel-developers)**
-- **[Redberry](https://redberry.international/laravel-development)**
-- **[Active Logic](https://activelogic.com)**
+The Release workflow builds `ghcr.io/<owner>/shipkit-app:v1.0.1` and `shipkit-web:v1.0.1`. The version is baked into the image and shows up in `/status`.
 
-## Contributing
+## Deploying to a server
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+On the server (any machine with Docker and the compose plugin):
 
-## Code of Conduct
+```bash
+mkdir -p /opt/shipkit && cd /opt/shipkit
+# copy deploy/docker-compose.prod.yml and deploy/deploy.sh here, then:
+cp .env.prod.example .env.prod      # fill in the values
+./deploy.sh v1.0.1
+```
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+`deploy.sh` does this, in order:
 
-## Security Vulnerabilities
+1. Pulls the two images for the tag.
+2. Starts MySQL and Redis and waits until they are healthy.
+3. Runs the migrations. If they fail, nothing is switched and the old version keeps running.
+4. Starts the new containers.
+5. Calls `/status` for up to 60 seconds.
+6. Healthy: remembers the tag in `.current_tag`. Not healthy: starts the previous tag again and exits with an error.
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+I tested the script locally with three releases: a good v1, a good v2 and a deliberately broken v3 (its PHP container exits at start). v3 was detected as unhealthy and v2 was started again automatically.
 
-## License
+The workflow's `deploy` job runs the same script over SSH. It is switched off until you add the repository variable `DEPLOY_ENABLED=true` and the secrets `DEPLOY_HOST`, `DEPLOY_USER` and `DEPLOY_SSH_KEY`. That job has not been run against a real server, because I don't have one for this demo.
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+## Tests
+
+```bash
+composer install && php artisan test
+```
+
+Five tests cover the status page (ok, version, heartbeat, database down gives 503), the redirect from `/`, and that the heartbeat is scheduled.
+
+For the reasoning behind each choice, read [docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md).
