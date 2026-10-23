@@ -9,3 +9,4 @@ storage/framework/views/*
 database/*.sqlite
 .env
 tests
+bootstrap/cache/*.php

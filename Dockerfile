@@ -5,7 +5,7 @@ WORKDIR /app
 COPY composer.json composer.lock ./
 RUN composer install --no-dev --no-scripts --no-autoloader --prefer-dist --no-interaction
 COPY . .
-RUN composer dump-autoload --optimize --no-dev --no-scripts
+RUN mkdir -p bootstrap/cache && composer dump-autoload --optimize --no-dev
 
 
 FROM php:8.3-fpm-alpine AS app
